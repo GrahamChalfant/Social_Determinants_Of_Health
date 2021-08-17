@@ -1,0 +1,237 @@
+---
+title: "healthcare_costs_kaggle_comp"
+author: "Graham Chalfant"
+date: "8/1/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+library(tidyverse)
+library(stringr)
+library(lubridate)
+library(FSelector)
+
+```
+
+```{r}
+#https://www.kaggle.com/ravichaubey1506/healthcare-cost#
+
+data <- read_csv("HospitalCosts.csv")
+
+#Check data is in correct form 
+str(data)
+
+#FEMALE needs to be categorical 
+data$FEMALE <- as.factor(data$FEMALE)
+data$RACE <- as.factor(data$RACE)
+#data$APRDRG <- as.factor(data$APRDRG)
+
+#Check NAs
+summary(data)#There is one NA in RACE - will remove column 
+count(data)
+
+#Remove NAs
+data <- na.omit(data) #removed the row with a NA race
+count(data)
+
+#Create age groups 
+data <- data %>% mutate(AGE_GROUP = ifelse(between(data$AGE, 0, 5), "0-5", #Checks if the first expression is true. If so, then "0-5" is printed, if not, the next ifelse is tested
+                                      ifelse(between(data$AGE, 6, 10), "6-10",
+                                             ifelse(between(data$AGE, 11, 15), "11-15", "16-20"))))
+#Factor the age groups
+data$AGE_GROUP <- as.factor(data$AGE_GROUP)
+
+#Assign levels to the new age categories 
+levels(data$AGE_GROUP) <- c("0-5", "6-10", "11-15", "16-20")
+
+
+```
+
+
+\#Goals of the analysis
+
+
+Question 1: To record the patient statistics, the agency wants to find the age category
+of people who frequent the hospital and has the maximum expenditure.
+
+Question 2: In order of severity of the diagnosis and treatments and to find out the
+expensive treatments, the agency wants to find the diagnosis related group
+that has maximum hospitalization and expenditure.
+
+Question 3: To make sure that there is no malpractice, the agency needs to analyze if
+the race of the patient is related to the hospitalization costs.
+
+Question 4: To properly utilize the costs, the agency has to analyze the severity of the
+hospital costs by age and gender for proper allocation of resources.
+
+Question 5: Since the length of stay is the crucial factor for inpatients, the agency wants
+to find if the length of stay can be predicted from age, gender, and race.
+
+Question 6: To perform a complete analysis, the agency wants to find the variable that
+mainly affects the hospital costs.
+
+
+| Column Name | Description                                             |
+|-------------|---------------------------------------------------------|
+| AGE         | Age of the patient discharged (0-17)                    |
+| FEMALE      | Binary variable that indicates if the patient is female |
+| LOS         | Length of stay, in days                                 |
+| RACE        | Race of the patient (specified numerically)             |
+| TOTCHG      | Hospital discharge costs                                |
+| APRDRG      | All patent refined diagnosis related groups             |
+|             |                                                         |
+
+: Data Dictionary
+
+
+Data Exploration 
+```{r}
+hist(data$AGE)#mostly younger individuals 
+
+table(data$FEMALE) #Even split of male and female - more females than males 
+
+boxplot(data$LOS)#Could be potential outliers in length of stay - will determine after modeling 
+
+data <- data %>% filter(LOS <= 10)
+count(data) #removed 10 rows 
+
+table(data$RACE) #Race is predominantly 1
+
+boxplot(data$TOTCHG)
+data <- data %>% filter(TOTCHG <= 40000) #Removing outliers
+
+data %>% group_by(APRDRG) %>% count(APRDRG) %>% arrange(desc(n)) #APRDRG 640 is by far the most frequent diagnosis group 
+
+```
+
+
+## Question 1: To record the patient statistics, the agency wants to find the age category of people who frequent the hospital and has the maximum expenditure.
+
+Average length of stay by age group
+- Average stay decreases with age_group
+```{r}
+#Average stay by age 
+average_stay_data <- data %>% group_by(AGE_GROUP) %>% summarise(avg_stay = mean(LOS)) %>% arrange(desc(avg_stay)) 
+
+#Filters data in decending order based on LOS
+#average_stay_data$AGE <- factor(average_stay_data$AGE, levels = average_stay_data$AGE[order(average_stay_data$avg_stay)])
+
+ggplot(average_stay_data, aes(x = AGE_GROUP, y = avg_stay)) + geom_bar(stat = "identity", fill = "steelblue") + labs(title = "Average stay by age", x = "Age", y = "Average length of stay") #+ scale_x_continuous(breaks=seq(0,17,1))
+
+```
+
+Average and max expenditure by age 
+- Average expenditure increases with age
+- Max expenditure is greatest for age groups 6 - 15
+```{r}
+#Max discharge and average discharge by age
+max_exp <- data %>% group_by(AGE_GROUP) %>% summarise(max_exp = max(TOTCHG), avg_exp = mean(TOTCHG)) %>% arrange(desc(max_exp))
+
+max_exp_longer <- pivot_longer(max_exp, c(avg_exp, max_exp))
+
+ggplot(max_exp_longer, aes(x = AGE_GROUP, y = value, fill = factor(name))) + geom_bar(stat = "identity", position = "dodge")+
+  scale_fill_discrete(name="Expenditure",
+                      labels=c("Average", "Max")) +
+  labs(title = "Expenditure by age", x = "Age", y = "Expense")
+
+```
+
+
+## Question 2: In order of severity of the diagnosis and treatments and to find out the expensive treatments, the agency wants to find the diagnosis related group that has maximum hospitalization and expenditure.
+
+Find the diagnosis related group that has maximum hospitalization and expenditure.
+```{r}
+max_diagnosis <- data %>% group_by(APRDRG) %>% summarise(MAX_CHARGE = max(TOTCHG)) %>% slice_max(MAX_CHARGE, n = 10)
+
+ggplot(max_diagnosis, aes(x = reorder(APRDRG, -MAX_CHARGE), y = MAX_CHARGE, fill = MAX_CHARGE)) + geom_bar(stat = "identity") + labs(title = "Max Charge by Diagnosis", x = "Diagnosis", y = "Max Charge") + theme(legend.position = "none") + geom_text(aes(label = MAX_CHARGE), vjust=1.6, color="white", size=3.5)
+
+```
+
+
+## Question 3: To make sure that there is no malpractice, the agency needs to analyze if the race of the patient is related to the hospitalization costs.
+
+Seems that there is potential for malpractice. Race two's average costs are almost double the average costs for all races. 
+```{r}
+race_plot <- data %>% group_by(RACE) %>% summarise(AVG_COST = mean(TOTCHG))
+
+total_average <- mean(data$TOTCHG)
+
+ggplot(race_plot, aes(x = RACE, y = AVG_COST)) + geom_bar(stat = "Identity", fill = "steelblue") + labs(title = "Average Cost by Race", y = "Average Cost", x = "Race") + geom_hline(aes(yintercept = total_average, color = "red")) + scale_fill_discrete(name = "Average", labels = 2440) + theme(legend.position = "none")
+
+```
+
+
+```{r}
+summary(lm(TOTCHG~RACE, data)) # Race is not a predictor of costs
+```
+
+
+## Question 4: To properly utilize the costs, the agency has to analyze the severity of the hospital costs by age and gender for proper allocation of resources.
+- Average costs increase for males with age
+- Average costs are much lower for females, and slightly increase with age until 16-20, where it reaches its lowest point
+
+```{r}
+age_gender_costs <- data %>% group_by(AGE_GROUP, FEMALE) %>% summarise(avg_costs = mean(TOTCHG)) %>% arrange(desc(avg_costs))
+
+ggplot(age_gender_costs, aes(x = AGE_GROUP, y = avg_costs, fill = factor(FEMALE))) + geom_bar(stat = "Identity", position = "dodge") + scale_fill_discrete(name = "Gender", labels = c("Male", "Female")) + labs(title = "Average Costs by Gender and Age Group", x = "Age Group", y = "Average Costs")
+
+```
+
+```{r}
+summary(lm(TOTCHG~AGE + FEMALE, data)) # AGE and FEMALE have a significant impact on TOTCHG based on p-values
+```
+
+
+## Question 5: Since the length of stay is the crucial factor for inpatients, the agency wants to find if the length of stay can be predicted from age, gender, and race.
+
+Age, gender, and race are poor predictors of LOS
+```{r}
+lm1 <- lm(LOS ~ AGE + FEMALE + RACE, data)
+
+summary(lm1)
+
+```
+
+```{r}
+#Calculating information gain 
+attribute_weights <- information.gain(LOS ~., data)
+
+#Ordering attributes based on IG
+attribute_weights %>% arrange(desc(attr_importance))
+```
+
+New model based on IG
+- TOTCHG, APRDRG, and AGE are all significant predictors of LOS
+```{r}
+data$APRDRG <- as.numeric(data$APRDRG) #Change back to numeric for model
+
+lm2 <- lm(LOS ~ TOTCHG + APRDRG + AGE, data)
+
+summary(lm2)
+```
+
+
+## Question 6: To perform a complete analysis, the agency wants to find the variable that mainly affects the hospital costs.
+
+```{r}
+#Calculating information gain 
+attribute_weights2 <- information.gain(TOTCHG ~., data)
+
+#Ordering attributes based on IG
+attribute_weights2 %>% arrange(desc(attr_importance))
+```
+
+- LOS and APRDRG are significant based on p-values
+- Adjusted R-squared: 53.57 percent
+- Cost is positively correlated with LOS 
+```{r}
+lm3 <- lm(TOTCHG~LOS+APRDRG, data) #Regression with LOS and APRDRG as predictor variables 
+
+summary(lm3)
+```
+
+
+
+
+
